@@ -1,4 +1,18 @@
 
+# Create VPC for Batch jobs to run in
+data "aws_vpc" "metaflow" {
+  tags = {
+    Name = "PrimaryVPC"
+  }
+}
+
+data "aws_subnet_ids" "metaflow" {
+  vpc_id = data.aws_vpc.metaflow.id
+  tags = {
+    private = ""
+  }
+}
+
 resource "aws_iam_role" "ecs_execution_role" {
   name               = "metaflow_ecs_execution_role"
   assume_role_policy = <<EOF
@@ -136,8 +150,8 @@ resource "aws_iam_role_policy_attachment" "aws_batch_service_role" {
 
 resource "aws_security_group" "metaflow_batch" {
   name       = var.batch_security_group_name
-  vpc_id     = aws_vpc.metaflow.id
-  depends_on = [aws_vpc.metaflow]
+  vpc_id     = data.aws_vpc.metaflow.id
+  depends_on = [data.aws_vpc.metaflow]
 
   egress {
     from_port   = 0
@@ -145,71 +159,6 @@ resource "aws_security_group" "metaflow_batch" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-}
-
-
-
-# Create VPC for Batch jobs to run in
-resource "aws_vpc" "metaflow" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  tags = {
-    Name = "metaflow-vpc"
-  }
-}
-
-resource "aws_internet_gateway" "metaflow" {
-  vpc_id = aws_vpc.metaflow.id
-}
-
-# Create a public Subnet inside that VPC
-resource "aws_subnet" "metaflow_batch" {
-  vpc_id                  = aws_vpc.metaflow.id
-  cidr_block              = "10.0.0.0/20"
-  map_public_ip_on_launch = true
-  availability_zone       = "us-east-1b"
-
-  tags = {
-    Name     = var.batch_subnet_name
-    Metaflow = "true"
-  }
-}
-
-
-resource "aws_subnet" "metaflow_ecs" {
-  vpc_id                  = aws_vpc.metaflow.id
-  cidr_block              = "10.0.16.0/20"
-  map_public_ip_on_launch = true
-  availability_zone       = "us-east-1a"
-
-  tags = {
-    Name     = var.ecs_subnet_name
-    Metaflow = "true"
-  }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.metaflow.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.metaflow.id
-  }
-
-  tags = {
-    Name     = "Public Subnet"
-    Metaflow = "true"
-  }
-}
-
-resource "aws_route_table_association" "us_east_1a_public" {
-  subnet_id      = aws_subnet.metaflow_batch.id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table_association" "us_east_1b_public" {
-  subnet_id      = aws_subnet.metaflow_ecs.id
-  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_batch_compute_environment" "metaflow" {
@@ -230,9 +179,7 @@ resource "aws_batch_compute_environment" "metaflow" {
       aws_security_group.metaflow_batch.id,
     ]
 
-    subnets = [
-      aws_subnet.metaflow_batch.id,
-    ]
+    subnets = data.aws_subnet_ids.metaflow.ids 
 
     type = "EC2"
   }
@@ -253,7 +200,7 @@ resource "aws_batch_job_queue" "metaflow" {
 # Setup Postgres RDS instance and ECS metaflow service
 resource "aws_db_subnet_group" "pg_subnet_group" {
   name       = var.pg_subnet_group_name
-  subnet_ids = [aws_subnet.metaflow_batch.id, aws_subnet.metaflow_ecs.id]
+  subnet_ids = data.aws_subnet_ids.metaflow.ids
 
   tags = {
     Name     = var.pg_subnet_group_name
@@ -263,8 +210,8 @@ resource "aws_db_subnet_group" "pg_subnet_group" {
 
 resource "aws_security_group" "metaflow_db" {
   name       = var.db_security_group_name
-  vpc_id     = aws_vpc.metaflow.id
-  depends_on = [aws_vpc.metaflow]
+  vpc_id     = data.aws_vpc.metaflow.id
+  depends_on = [data.aws_vpc.metaflow]
 
   ingress {
     from_port   = 5432
@@ -361,7 +308,7 @@ EOF
 
 resource "aws_security_group" "metaflow_service" {
   name   = var.service_security_group_name
-  vpc_id = aws_vpc.metaflow.id
+  vpc_id = data.aws_vpc.metaflow.id
 
   ingress {
     from_port   = 8080
@@ -457,7 +404,7 @@ resource "aws_ecs_service" "metaflow_service" {
   network_configuration {
     security_groups  = [aws_security_group.metaflow_service.id]
     assign_public_ip = true
-    subnets          = [aws_subnet.metaflow_batch.id, aws_subnet.metaflow_ecs.id]
+    subnets          = data.aws_subnet_ids.metaflow.ids
   }
 
   lifecycle {
